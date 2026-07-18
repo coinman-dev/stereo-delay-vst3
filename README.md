@@ -16,6 +16,13 @@ PreSonus Studio One Pro. On Linux, install it in `~/.vst3/` and rescan in the VS
 
 - `Left Offset`: `-50.0` to `+50.0 ms`, default `0.0 ms`
 - `Right Offset`: `-50.0` to `+50.0 ms`, default `0.0 ms`
+- `Left Phase`: `-180` to `+180 deg` in `1 deg` steps, default `0 deg`
+- `Right Phase`: `-180` to `+180 deg` in `1 deg` steps, default `0 deg`
+
+The phase controls use a wideband Hilbert phase rotator. At `0 deg` the signal is unchanged;
+`-180 deg` and `+180 deg` invert the selected channel. This is a broadband approximation, so the
+result is least exact close to DC and Nyquist. When either phase control is non-zero, the plugin
+reports an additional fixed 64-sample latency to keep both channels aligned.
 
 Host latency compensation changes automatically to the minimum required value. For example, with
 `Left Offset = -5 ms` and `Right Offset = +5 ms`, the plugin reports `5 ms` latency to the host,

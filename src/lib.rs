@@ -1,7 +1,9 @@
 mod delay_line;
+mod phase_rotator;
 
 use delay_line::DelayLine;
 use nih_plug::prelude::*;
+use phase_rotator::{HILBERT_GROUP_DELAY_SAMPLES, HilbertTransformer};
 use std::{num::NonZeroU32, sync::Arc};
 
 const MAX_OFFSET_MS: f32 = 50.0;
@@ -11,6 +13,8 @@ pub struct StereoDelay {
     params: Arc<StereoDelayParams>,
     left_delay: DelayLine,
     right_delay: DelayLine,
+    left_hilbert: HilbertTransformer,
+    right_hilbert: HilbertTransformer,
     sample_rate: f32,
     reported_latency_samples: u32,
 }
@@ -22,6 +26,12 @@ pub struct StereoDelayParams {
 
     #[id = "right-offset"]
     pub right_offset: FloatParam,
+
+    #[id = "left-phase"]
+    pub left_phase: FloatParam,
+
+    #[id = "right-phase"]
+    pub right_phase: FloatParam,
 }
 
 impl Default for StereoDelay {
@@ -30,6 +40,8 @@ impl Default for StereoDelay {
             params: Arc::new(StereoDelayParams::default()),
             left_delay: DelayLine::new(2),
             right_delay: DelayLine::new(2),
+            left_hilbert: HilbertTransformer::new(),
+            right_hilbert: HilbertTransformer::new(),
             sample_rate: 44_100.0,
             reported_latency_samples: 0,
         }
@@ -42,6 +54,10 @@ impl Default for StereoDelayParams {
             min: -MAX_OFFSET_MS,
             max: MAX_OFFSET_MS,
         };
+        let phase_range = FloatRange::Linear {
+            min: -180.0,
+            max: 180.0,
+        };
 
         Self {
             // This must remain unsmoothed: the reported host latency always matches the current
@@ -52,6 +68,12 @@ impl Default for StereoDelayParams {
             right_offset: FloatParam::new("Right Offset", 0.0, range)
                 .with_step_size(0.1)
                 .with_unit(" ms"),
+            left_phase: FloatParam::new("Left Phase", 0.0, phase_range)
+                .with_step_size(1.0)
+                .with_unit(" deg"),
+            right_phase: FloatParam::new("Right Phase", 0.0, phase_range)
+                .with_step_size(1.0)
+                .with_unit(" deg"),
         }
     }
 }
@@ -64,6 +86,20 @@ impl StereoDelay {
     fn required_compensation_samples(&self, left_offset_ms: f32, right_offset_ms: f32) -> u32 {
         let earliest_offset_ms = left_offset_ms.min(right_offset_ms).min(0.0);
         (-earliest_offset_ms * self.sample_rate / 1_000.0).ceil() as u32
+    }
+
+    fn required_latency_samples(
+        &self,
+        left_offset_ms: f32,
+        right_offset_ms: f32,
+        phase_rotation_active: bool,
+    ) -> u32 {
+        let phase_latency = if phase_rotation_active {
+            HILBERT_GROUP_DELAY_SAMPLES
+        } else {
+            0
+        };
+        phase_latency + self.required_compensation_samples(left_offset_ms, right_offset_ms)
     }
 
     fn offset_to_delay_samples(&self, offset_ms: f32, compensation_samples: u32) -> f32 {
@@ -104,9 +140,12 @@ impl Plugin for StereoDelay {
         let max_delay_samples = Self::max_delay_samples(self.sample_rate);
         self.left_delay = DelayLine::new(max_delay_samples);
         self.right_delay = DelayLine::new(max_delay_samples);
-        self.reported_latency_samples = self.required_compensation_samples(
+        self.left_hilbert.reset();
+        self.right_hilbert.reset();
+        self.reported_latency_samples = self.required_latency_samples(
             self.params.left_offset.value(),
             self.params.right_offset.value(),
+            self.params.left_phase.value() != 0.0 || self.params.right_phase.value() != 0.0,
         );
         context.set_latency_samples(self.reported_latency_samples);
 
@@ -116,6 +155,8 @@ impl Plugin for StereoDelay {
     fn reset(&mut self) {
         self.left_delay.reset();
         self.right_delay.reset();
+        self.left_hilbert.reset();
+        self.right_hilbert.reset();
     }
 
     fn process(
@@ -126,10 +167,15 @@ impl Plugin for StereoDelay {
     ) -> ProcessStatus {
         let left_offset = self.params.left_offset.value();
         let right_offset = self.params.right_offset.value();
+        let left_phase = self.params.left_phase.value();
+        let right_phase = self.params.right_phase.value();
+        let phase_rotation_active = left_phase != 0.0 || right_phase != 0.0;
         let compensation_samples = self.required_compensation_samples(left_offset, right_offset);
-        if compensation_samples != self.reported_latency_samples {
-            context.set_latency_samples(compensation_samples);
-            self.reported_latency_samples = compensation_samples;
+        let latency_samples =
+            self.required_latency_samples(left_offset, right_offset, phase_rotation_active);
+        if latency_samples != self.reported_latency_samples {
+            context.set_latency_samples(latency_samples);
+            self.reported_latency_samples = latency_samples;
         }
 
         let left_delay = self.offset_to_delay_samples(left_offset, compensation_samples);
@@ -142,11 +188,34 @@ impl Plugin for StereoDelay {
             let right = channels
                 .next()
                 .expect("stereo input layout guarantees right channel");
-            *left = self.left_delay.process(*left, left_delay);
-            *right = self.right_delay.process(*right, right_delay);
+            let (left_dry, left_quadrature) = self.left_hilbert.process(*left);
+            let (right_dry, right_quadrature) = self.right_hilbert.process(*right);
+            let left_phase_rotated = if phase_rotation_active {
+                rotate_phase(left_dry, left_quadrature, left_phase)
+            } else {
+                *left
+            };
+            let right_phase_rotated = if phase_rotation_active {
+                rotate_phase(right_dry, right_quadrature, right_phase)
+            } else {
+                *right
+            };
+            *left = self.left_delay.process(left_phase_rotated, left_delay);
+            *right = self.right_delay.process(right_phase_rotated, right_delay);
         }
 
         ProcessStatus::Normal
+    }
+}
+
+fn rotate_phase(dry: f32, quadrature: f32, degrees: f32) -> f32 {
+    if degrees == 0.0 {
+        dry
+    } else if degrees.abs() == 180.0 {
+        -dry
+    } else {
+        let radians = degrees.to_radians();
+        dry * radians.cos() + quadrature * radians.sin()
     }
 }
 
@@ -160,7 +229,15 @@ nih_export_vst3!(StereoDelay);
 
 #[cfg(test)]
 mod tests {
-    use super::StereoDelay;
+    use super::{HILBERT_GROUP_DELAY_SAMPLES, StereoDelay, rotate_phase};
+
+    #[test]
+    fn phase_rotation_preserves_zero_and_inverts_at_the_endpoints() {
+        assert_eq!(rotate_phase(0.75, 0.25, 0.0), 0.75);
+        assert_eq!(rotate_phase(0.75, 0.25, -180.0), -0.75);
+        assert_eq!(rotate_phase(0.75, 0.25, 180.0), -0.75);
+        assert!((rotate_phase(0.75, 0.25, 90.0) - 0.25).abs() < 1.0e-6);
+    }
 
     #[test]
     fn reports_only_the_required_compensation_for_negative_offsets() {
@@ -169,9 +246,17 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(plugin.required_compensation_samples(0.0, 5.0), 0);
-        assert_eq!(plugin.required_compensation_samples(-5.0, 5.0), 240);
-        assert_eq!(plugin.required_compensation_samples(-5.0, -10.0), 480);
+        assert_eq!(plugin.required_latency_samples(0.0, 5.0, false), 0);
+        assert_eq!(plugin.required_latency_samples(-5.0, 5.0, false), 240);
+        assert_eq!(plugin.required_latency_samples(-5.0, -10.0, false), 480);
+        assert_eq!(
+            plugin.required_latency_samples(0.0, 0.0, true),
+            HILBERT_GROUP_DELAY_SAMPLES
+        );
+        assert_eq!(
+            plugin.required_latency_samples(-5.0, 5.0, true),
+            HILBERT_GROUP_DELAY_SAMPLES + 240
+        );
     }
 
     #[test]
