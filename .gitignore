@@ -1,0 +1,5 @@
+/target/
+/.cargo-home/
+/.linux-build-deps/
+/plugins/
+Cargo.lock
