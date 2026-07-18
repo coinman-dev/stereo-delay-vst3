@@ -2,4 +2,5 @@
 /.cargo-home/
 /.linux-build-deps/
 /plugins/
+/tmp/
 Cargo.lock

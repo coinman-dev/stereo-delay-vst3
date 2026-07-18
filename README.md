@@ -40,3 +40,17 @@ scripts/build-vst3.sh x86_64-unknown-linux-gnu
 ```
 
 The script writes the packages to `plugins/windows` and `plugins/linux`.
+
+### Clean generated files
+
+Remove local build artifacts, generated plugin bundles, dependency caches, temporary files, and the generated lockfile:
+
+```bash
+./scripts/clean.sh
+```
+
+Preview what will be removed without changing files:
+
+```bash
+./scripts/clean.sh --dry-run
+```
