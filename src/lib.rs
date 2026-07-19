@@ -32,6 +32,9 @@ pub struct StereoDelayParams {
     #[id = "left-offset"]
     pub left_offset: FloatParam,
 
+    #[id = "swap-offsets"]
+    pub swap_offsets: BoolParam,
+
     #[id = "right-offset"]
     pub right_offset: FloatParam,
 
@@ -82,6 +85,7 @@ impl Default for StereoDelayParams {
             left_offset: FloatParam::new("Left Offset", 0.0, range)
                 .with_step_size(0.1)
                 .with_unit(" ms"),
+            swap_offsets: BoolParam::new("Swap Offsets", false),
             right_offset: FloatParam::new("Right Offset", 0.0, range)
                 .with_step_size(0.1)
                 .with_unit(" ms"),
@@ -193,8 +197,11 @@ impl Plugin for StereoDelay {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        let left_offset = self.params.left_offset.value();
-        let right_offset = self.params.right_offset.value();
+        let (left_offset, right_offset) = channel_offsets(
+            self.params.left_offset.value(),
+            self.params.right_offset.value(),
+            self.params.swap_offsets.value(),
+        );
         let left_phase = self.params.left_phase.value();
         let right_phase = self.params.right_phase.value();
         let bypass_active = self.params.bypass.value();
@@ -264,6 +271,14 @@ fn rotate_phase(dry: f32, quadrature: f32, degrees: f32) -> f32 {
     }
 }
 
+fn channel_offsets(left_offset: f32, right_offset: f32, swapped: bool) -> (f32, f32) {
+    if swapped {
+        (right_offset, left_offset)
+    } else {
+        (left_offset, right_offset)
+    }
+}
+
 impl Vst3Plugin for StereoDelay {
     const VST3_CLASS_ID: [u8; 16] = *b"StereoDelayVst3!";
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
@@ -274,7 +289,9 @@ nih_export_vst3!(StereoDelay);
 
 #[cfg(test)]
 mod tests {
-    use super::{HILBERT_GROUP_DELAY_SAMPLES, StereoDelay, StereoDelayParams, rotate_phase};
+    use super::{
+        HILBERT_GROUP_DELAY_SAMPLES, StereoDelay, StereoDelayParams, channel_offsets, rotate_phase,
+    };
     use nih_plug::prelude::{Param, ParamFlags};
 
     #[test]
@@ -293,6 +310,12 @@ mod tests {
         assert_eq!(rotate_phase(0.75, 0.25, -180.0), -0.75);
         assert_eq!(rotate_phase(0.75, 0.25, 180.0), -0.75);
         assert!((rotate_phase(0.75, 0.25, 90.0) - 0.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn swap_offsets_exchanges_the_channel_delays_without_changing_their_values() {
+        assert_eq!(channel_offsets(-5.0, 5.0, false), (-5.0, 5.0));
+        assert_eq!(channel_offsets(-5.0, 5.0, true), (5.0, -5.0));
     }
 
     #[test]
