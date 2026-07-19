@@ -14,6 +14,7 @@ PreSonus Studio One Pro. On Linux, install it in `~/.vst3/` and rescan in the VS
 
 ## Parameters
 
+- `Bypass`: standard DAW bypass control, default `Off`
 - `Left Offset`: `-50.0` to `+50.0 ms`, default `0.0 ms`
 - `Right Offset`: `-50.0` to `+50.0 ms`, default `0.0 ms`
 - `Left Phase`: `-180` to `+180 deg` in `1 deg` steps, default `0 deg`
@@ -29,8 +30,10 @@ Host latency compensation changes automatically to the minimum required value. F
 then applies physical delays of `0 ms` to the left channel and `10 ms` to the right. When both
 offsets are non-negative, the reported latency is `0 ms`.
 
-The plugin intentionally has no custom editor. Studio One displays `Left Offset` and `Right
-Offset` using its native controls, as shown in the insert panel, and exposes them to automation.
+The plugin intentionally has no custom editor. Studio One displays the controls using its native
+interface. All parameters, including `Bypass`, are exposed to DAW automation. The bypass path
+keeps the current reported latency and crossfades over 5 ms, so toggling it does not change track
+alignment or cause a click.
 
 ## Build
 

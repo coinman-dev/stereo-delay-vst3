@@ -8,19 +8,27 @@ use std::{num::NonZeroU32, sync::Arc};
 
 const MAX_OFFSET_MS: f32 = 50.0;
 const MAX_PHYSICAL_DELAY_MS: f32 = MAX_OFFSET_MS * 2.0;
+const BYPASS_CROSSFADE_MS: f32 = 5.0;
 
 pub struct StereoDelay {
     params: Arc<StereoDelayParams>,
     left_delay: DelayLine,
     right_delay: DelayLine,
+    left_bypass_delay: DelayLine,
+    right_bypass_delay: DelayLine,
     left_hilbert: HilbertTransformer,
     right_hilbert: HilbertTransformer,
+    bypass_mix: Smoother<f32>,
+    bypass_active: bool,
     sample_rate: f32,
     reported_latency_samples: u32,
 }
 
 #[derive(Params)]
 pub struct StereoDelayParams {
+    #[id = "bypass"]
+    pub bypass: BoolParam,
+
     #[id = "left-offset"]
     pub left_offset: FloatParam,
 
@@ -40,8 +48,12 @@ impl Default for StereoDelay {
             params: Arc::new(StereoDelayParams::default()),
             left_delay: DelayLine::new(2),
             right_delay: DelayLine::new(2),
+            left_bypass_delay: DelayLine::new(2),
+            right_bypass_delay: DelayLine::new(2),
             left_hilbert: HilbertTransformer::new(),
             right_hilbert: HilbertTransformer::new(),
+            bypass_mix: Smoother::new(SmoothingStyle::Linear(BYPASS_CROSSFADE_MS)),
+            bypass_active: false,
             sample_rate: 44_100.0,
             reported_latency_samples: 0,
         }
@@ -60,6 +72,11 @@ impl Default for StereoDelayParams {
         };
 
         Self {
+            // VST3 hosts associate this parameter with their standard bypass control.
+            bypass: BoolParam::new("Bypass", false)
+                .with_value_to_string(formatters::v2s_bool_bypass())
+                .with_string_to_value(formatters::s2v_bool_bypass())
+                .make_bypass(),
             // This must remain unsmoothed: the reported host latency always matches the current
             // channel offsets, including when the controls are automated.
             left_offset: FloatParam::new("Left Offset", 0.0, range)
@@ -140,8 +157,14 @@ impl Plugin for StereoDelay {
         let max_delay_samples = Self::max_delay_samples(self.sample_rate);
         self.left_delay = DelayLine::new(max_delay_samples);
         self.right_delay = DelayLine::new(max_delay_samples);
+        let max_bypass_delay_samples = max_delay_samples + HILBERT_GROUP_DELAY_SAMPLES as usize;
+        self.left_bypass_delay = DelayLine::new(max_bypass_delay_samples);
+        self.right_bypass_delay = DelayLine::new(max_bypass_delay_samples);
         self.left_hilbert.reset();
         self.right_hilbert.reset();
+        self.bypass_active = self.params.bypass.value();
+        self.bypass_mix
+            .reset(if self.bypass_active { 1.0 } else { 0.0 });
         self.reported_latency_samples = self.required_latency_samples(
             self.params.left_offset.value(),
             self.params.right_offset.value(),
@@ -155,8 +178,13 @@ impl Plugin for StereoDelay {
     fn reset(&mut self) {
         self.left_delay.reset();
         self.right_delay.reset();
+        self.left_bypass_delay.reset();
+        self.right_bypass_delay.reset();
         self.left_hilbert.reset();
         self.right_hilbert.reset();
+        self.bypass_active = self.params.bypass.value();
+        self.bypass_mix
+            .reset(if self.bypass_active { 1.0 } else { 0.0 });
     }
 
     fn process(
@@ -169,6 +197,7 @@ impl Plugin for StereoDelay {
         let right_offset = self.params.right_offset.value();
         let left_phase = self.params.left_phase.value();
         let right_phase = self.params.right_phase.value();
+        let bypass_active = self.params.bypass.value();
         let phase_rotation_active = left_phase != 0.0 || right_phase != 0.0;
         let compensation_samples = self.required_compensation_samples(left_offset, right_offset);
         let latency_samples =
@@ -176,6 +205,11 @@ impl Plugin for StereoDelay {
         if latency_samples != self.reported_latency_samples {
             context.set_latency_samples(latency_samples);
             self.reported_latency_samples = latency_samples;
+        }
+        if bypass_active != self.bypass_active {
+            self.bypass_mix
+                .set_target(self.sample_rate, if bypass_active { 1.0 } else { 0.0 });
+            self.bypass_active = bypass_active;
         }
 
         let left_delay = self.offset_to_delay_samples(left_offset, compensation_samples);
@@ -188,20 +222,31 @@ impl Plugin for StereoDelay {
             let right = channels
                 .next()
                 .expect("stereo input layout guarantees right channel");
-            let (left_dry, left_quadrature) = self.left_hilbert.process(*left);
-            let (right_dry, right_quadrature) = self.right_hilbert.process(*right);
+            let left_input = *left;
+            let right_input = *right;
+            let left_bypassed = self
+                .left_bypass_delay
+                .process(left_input, latency_samples as f32);
+            let right_bypassed = self
+                .right_bypass_delay
+                .process(right_input, latency_samples as f32);
+            let (left_dry, left_quadrature) = self.left_hilbert.process(left_input);
+            let (right_dry, right_quadrature) = self.right_hilbert.process(right_input);
             let left_phase_rotated = if phase_rotation_active {
                 rotate_phase(left_dry, left_quadrature, left_phase)
             } else {
-                *left
+                left_input
             };
             let right_phase_rotated = if phase_rotation_active {
                 rotate_phase(right_dry, right_quadrature, right_phase)
             } else {
-                *right
+                right_input
             };
-            *left = self.left_delay.process(left_phase_rotated, left_delay);
-            *right = self.right_delay.process(right_phase_rotated, right_delay);
+            let left_processed = self.left_delay.process(left_phase_rotated, left_delay);
+            let right_processed = self.right_delay.process(right_phase_rotated, right_delay);
+            let bypass_mix = self.bypass_mix.next();
+            *left = left_processed * (1.0 - bypass_mix) + left_bypassed * bypass_mix;
+            *right = right_processed * (1.0 - bypass_mix) + right_bypassed * bypass_mix;
         }
 
         ProcessStatus::Normal
@@ -229,7 +274,18 @@ nih_export_vst3!(StereoDelay);
 
 #[cfg(test)]
 mod tests {
-    use super::{HILBERT_GROUP_DELAY_SAMPLES, StereoDelay, rotate_phase};
+    use super::{HILBERT_GROUP_DELAY_SAMPLES, StereoDelay, StereoDelayParams, rotate_phase};
+    use nih_plug::prelude::{Param, ParamFlags};
+
+    #[test]
+    fn exposes_an_automatable_vst3_bypass_parameter() {
+        let params = StereoDelayParams::default();
+
+        assert!(!params.bypass.value());
+        assert_eq!(params.bypass.step_count(), Some(1));
+        assert!(params.bypass.flags().contains(ParamFlags::BYPASS));
+        assert!(!params.bypass.flags().contains(ParamFlags::NON_AUTOMATABLE));
+    }
 
     #[test]
     fn phase_rotation_preserves_zero_and_inverts_at_the_endpoints() {
