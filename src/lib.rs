@@ -285,6 +285,21 @@ impl Vst3Plugin for StereoDelay {
         &[Vst3SubCategory::Fx, Vst3SubCategory::Tools];
 }
 
+impl ClapPlugin for StereoDelay {
+    const CLAP_ID: &'static str = "com.github.coinman-dev.stereo-delay";
+    const CLAP_DESCRIPTION: Option<&'static str> =
+        Some("Stereo timing offsets and phase rotation for the left and right channels");
+    const CLAP_MANUAL_URL: Option<&'static str> = None;
+    const CLAP_SUPPORT_URL: Option<&'static str> = None;
+    const CLAP_FEATURES: &'static [ClapFeature] = &[
+        ClapFeature::AudioEffect,
+        ClapFeature::Delay,
+        ClapFeature::Stereo,
+        ClapFeature::Utility,
+    ];
+}
+
+nih_export_clap!(StereoDelay);
 nih_export_vst3!(StereoDelay);
 
 #[cfg(test)]

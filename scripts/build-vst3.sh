@@ -15,11 +15,13 @@ case "$target" in
 esac
 
 export CARGO_HOME="$root/.cargo-home"
-rm -rf "$root/target/bundled/StereoDelay.vst3"
+rm -rf "$root/target/bundled/StereoDelay.vst3" "$root/target/bundled/StereoDelay.clap"
 cargo xtask bundle stereo-delay --release --target "$target"
 
 mkdir -p "$destination/$platform"
 rm -rf "$destination/$platform/StereoDelay.vst3"
+rm -f "$destination/$platform/StereoDelay.clap"
 cp -a "$root/target/bundled/StereoDelay.vst3" "$destination/$platform/"
+cp -a "$root/target/bundled/StereoDelay.clap" "$destination/$platform/"
 
-printf 'Created %s/%s/StereoDelay.vst3\n' "$destination" "$platform"
+printf 'Created VST3 and CLAP packages in %s/%s\n' "$destination" "$platform"

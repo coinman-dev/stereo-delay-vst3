@@ -4,13 +4,14 @@ VST3 effect with independent timing offsets for the left and right channels.
 
 ## Ready-to-use packages
 
-- Windows: `plugins/windows/StereoDelay.vst3`
-- Linux: `plugins/linux/StereoDelay.vst3`
+- Windows: `plugins/windows/StereoDelay.vst3` and `plugins/windows/StereoDelay.clap`
+- Linux: `plugins/linux/StereoDelay.vst3` and `plugins/linux/StereoDelay.clap`
 
 Copy the complete `StereoDelay.vst3` directory, not only the file inside it.
 
 On Windows, install it in `C:\\Program Files\\Common Files\\VST3\\` and rescan plugins in
-PreSonus Studio One Pro. On Linux, install it in `~/.vst3/` and rescan in the VST3-compatible host.
+PreSonus Studio One Pro. Install the CLAP file in `C:\\Program Files\\Common Files\\CLAP\\` on
+Windows or `~/.clap/` on Linux, then rescan in a CLAP-compatible host.
 
 ## Parameters
 
